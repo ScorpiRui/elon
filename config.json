@@ -1,0 +1,13 @@
+{
+    "BOT_TOKEN": "7586372598:AAFpYjpFd7ZWyhvxQuNxMaMEysapPkvpRD8",
+    "ADMINS": [
+        1135712336,
+        7883374132
+    ],
+    "ENCODING_SETTINGS": {
+        "DEFAULT_ENCODING": "utf-8",
+        "UNICODE_NORMALIZATION": "NFC",
+        "ENSURE_ASCII": false
+    },
+    "FOLDER_CACHE_TTL_SECONDS": 7200
+} 
