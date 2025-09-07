@@ -498,39 +498,23 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                     packs_changed = True
                     log.info(f"Peers changed. Rebuilt task packs for new cycle {announcement.current_cycle} (count={len(announcement.task_packs)})")
 
-        # Initialize cycle totals/fail log for the first cycle
-        if getattr(announcement, 'cycle_totals', None) is None:
-            announcement.cycle_totals = {}
-        if getattr(announcement, 'failed_peers', None) is None:
-            announcement.failed_peers = []
-
         if packs_changed:
             await announcement_store.update_announcement(announcement)
 
         total_success = 0
         total_failure = 0
 
-        # Process packs sequentially until a FLOOD_WAIT pack remains or all packs done
-        while True:
-            # Remove any packs explicitly marked completed
-            remaining_packs = [p for p in (announcement.task_packs or []) if not p.get('completed')]
-            announcement.task_packs = remaining_packs
-            if not announcement.task_packs:
-                # All packs done for this cycle
-                await announcement_store.update_announcement(announcement)
-                await _maybe_send_cycle_report(announcement, driver)
-                # Start new cycle
-                announcement.current_cycle = int(getattr(announcement, 'current_cycle', 0)) + 1
-                announcement.task_packs = _generate_task_packs(peers, cycle=announcement.current_cycle)
-                await announcement_store.update_announcement(announcement)
-                break
-
-            # Pick first not completed pack
-            next_pack = announcement.task_packs[0]
+        # Process all current packs once (snapshot) so we don't loop infinitely on paused packs
+        packs_snapshot = list(announcement.task_packs or [])
+        for next_pack in packs_snapshot:
+            # Skip if this pack was completed/deleted meanwhile
+            if next_pack.get('completed'):
+                continue
+            if next_pack.get('pack_id') not in {p.get('pack_id') for p in (announcement.task_packs or [])}:
+                continue
 
             sent_ids: Set[int] = set(int(x) for x in next_pack.get('sent_peer_ids', []))
             pack_peers: List[Dict] = list(next_pack.get('peers', []))
-            # Build unsent list dynamically to respect removals
             unsent_peers: List[Dict] = [p for p in pack_peers if int(p['id']) not in sent_ids and int(p['id']) not in SUCCESS_RATE_STATS['banned_channels']]
 
             saw_flood_wait = False
@@ -541,14 +525,12 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                     if success:
                         total_success += 1
                         sent_ids.add(int(peer['id']))
-                        # Persist progress
                         next_pack['sent_peer_ids'] = list(sent_ids)
                         await announcement_store.update_announcement(announcement)
                     else:
                         if error and isinstance(error, PeerError) and isinstance(error.error, str) and error.error.startswith('FLOOD_WAIT:'):
                             saw_flood_wait = True
                             log.info(f"Slow mode for {peer.get('title','?')} ({peer['id']}), will retry next interval")
-                            # keep peer in pack, continue with others
                             continue
                         else:
                             total_failure += 1
@@ -561,13 +543,11 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                                         'reason': error.error if isinstance(error.error, str) else str(error.error),
                                         'cycle': announcement.current_cycle
                                     })
-                                # Notify driver best-effort
                                 try:
                                     bot = Bot(token=settings['BOT_TOKEN'])
                                     await bot.send_message(chat_id=driver.tg_id, text=f"❌ '{peer.get('title','?')}' guruhiga yuborilmadi. Sabab: {error.error}")
                                 except Exception:
                                     pass
-                            # Remove peer from pack
                             next_pack['peers'] = [pp for pp in next_pack['peers'] if int(pp['id']) != int(peer['id'])]
                             await announcement_store.update_announcement(announcement)
                 except Exception as e:
@@ -588,32 +568,25 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                     next_pack['peers'] = [pp for pp in next_pack['peers'] if int(pp['id']) != int(peer['id'])]
                     await announcement_store.update_announcement(announcement)
 
-            # Recompute remaining of this pack
             pack_peers_after: List[Dict] = list(next_pack.get('peers', []))
-            # If all peers in this pack are sent OR pack is empty after removals, complete and delete the pack
             if len(pack_peers_after) == 0 or len(sent_ids) >= len(pack_peers_after):
                 next_pack['completed'] = True
                 await announcement_store.update_announcement(announcement)
-                # delete pack from list
-                announcement.task_packs = [p for p in announcement.task_packs if p.get('pack_id') != next_pack.get('pack_id')]
+                announcement.task_packs = [p for p in (announcement.task_packs or []) if p.get('pack_id') != next_pack.get('pack_id')]
                 await announcement_store.update_announcement(announcement)
-                # Continue to next pack in same run
                 continue
-
-            # If we saw FLOOD_WAIT, stop here and continue in next scheduler interval
+            # If FLOOD_WAIT seen, leave this pack for next run and continue to next pack
             if saw_flood_wait:
-                log.info(f"Pack {next_pack.get('pack_id')} paused due to FLOOD_WAIT; will retry later")
-                break
-
-            # If pack is not completed but no FLOOD_WAIT (e.g., only banned removed), check again:
-            remaining_unsent = [p for p in next_pack.get('peers', []) if int(p['id']) not in set(next_pack.get('sent_peer_ids', []))]
-            if not remaining_unsent:
-                next_pack['completed'] = True
-                announcement.task_packs = [p for p in announcement.task_packs if p.get('pack_id') != next_pack.get('pack_id')]
-                await announcement_store.update_announcement(announcement)
+                log.info(f"Pack {next_pack.get('pack_id')} paused due to FLOOD_WAIT; moving on to next pack")
                 continue
-            # Nothing more to do this run
-            break
+
+        # If after processing snapshot no packs remain, close cycle
+        if not (announcement.task_packs or []):
+            await announcement_store.update_announcement(announcement)
+            await _maybe_send_cycle_report(announcement, driver)
+            announcement.current_cycle = int(getattr(announcement, 'current_cycle', 0)) + 1
+            announcement.task_packs = _generate_task_packs(peers, cycle=announcement.current_cycle)
+            await announcement_store.update_announcement(announcement)
 
         log.info(f"Announcement {announcement.id} run summary: {total_success} success, {total_failure} failure")
         return total_success, total_failure
