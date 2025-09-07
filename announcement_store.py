@@ -136,7 +136,7 @@ class AnnouncementStore:
         import unicodedata
         if announcement.text:
             announcement.text = unicodedata.normalize('NFC', announcement.text)
-            log.info(f"Creating announcement with text: {announcement.text[:100]}...")
+            log.info(f"Creating announcement for driver {announcement.driver_id}")
         
         announcement_dict = announcement.to_dict()
         # Replace by driver_id if exists
@@ -155,7 +155,7 @@ class AnnouncementStore:
         import unicodedata
         if announcement.text:
             announcement.text = unicodedata.normalize('NFC', announcement.text)
-            log.info(f"Updating announcement text: {announcement.text[:100]}...")
+            log.info(f"Updating announcement for driver {announcement.driver_id}")
         
         updated = False
         for i, d in enumerate(data):

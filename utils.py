@@ -291,7 +291,7 @@ async def process_peer_batch(
     import unicodedata
     if text:
         text = unicodedata.normalize('NFC', text)
-        log.info(f"Processing batch {batch_id} for announcement {announcement_id} with {len(peers)} peers, text: {text[:100]}...")
+        log.info(f"Processing batch {batch_id} for announcement {announcement_id} with {len(peers)} peers")
     
     success_count = 0
     failure_count = 0
@@ -364,7 +364,7 @@ async def send_message_with_retry(
         text = unicodedata.normalize('NFC', text)
         
         # Log the text for debugging (first 100 characters)
-        log.info(f"Sending message to peer {peer['id']} ({peer.get('title', 'Unknown')}): {text[:100]}...")
+        log.info(f"Sending message to peer {peer['id']} ({peer.get('title', 'Unknown')})")
         
     except Exception as e:
         log.error(f"Error normalizing text: {e}")
@@ -435,7 +435,7 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
         import unicodedata
         if announcement.text:
             announcement.text = unicodedata.normalize('NFC', announcement.text)
-            log.info(f"Processing announcement with text: {announcement.text[:100]}...")
+            log.info(f"Processing announcement for driver {announcement.driver_id}")
         
         # Get driver
         driver = await driver_store.get_driver(announcement.driver_id)
@@ -537,6 +537,8 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                             if error:
                                 log.error(f"Pack {next_pack.get('pack_id')} failed for peer {peer.get('title','?')} ({peer['id']}): {error.error}")
                                 if announcement.current_cycle == 0:
+                                    if announcement.failed_peers is None:
+                                        announcement.failed_peers = []
                                     announcement.failed_peers.append({
                                         'id': int(peer['id']),
                                         'title': peer.get('title'),
@@ -554,6 +556,8 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                     total_failure += 1
                     log.error(f"Unexpected error sending to peer {peer.get('title','?')} ({peer['id']}): {e}")
                     if announcement.current_cycle == 0:
+                        if announcement.failed_peers is None:
+                            announcement.failed_peers = []
                         announcement.failed_peers.append({
                             'id': int(peer['id']),
                             'title': peer.get('title'),
