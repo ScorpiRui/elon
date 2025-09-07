@@ -42,6 +42,9 @@ class AnnouncementData:
     # {"pack_id": str, "peers": List[Dict[id,title,type]], "sent_peer_ids": List[int], "completed": bool}
     task_packs: Optional[List[Dict[str, Any]]] = None
     current_cycle: int = 0
+    # Per-cycle original totals and failure info for reporting
+    cycle_totals: Optional[Dict[str, int]] = None  # {"0": total_peers, "1": ...}
+    failed_peers: Optional[List[Dict[str, Any]]] = None  # [{id,title,reason,cycle}]
 
     def __post_init__(self):
         if self.created_at is None:

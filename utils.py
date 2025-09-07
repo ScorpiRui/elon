@@ -388,10 +388,11 @@ async def send_message_with_retry(
                 SUCCESS_RATE_STATS['successful_sends'] += 1
                 return True, None
         except FloodWaitError as e:
+            # Slow mode / floodwait: do not mark as failed, just delay and retry
             log.warning(f"Flood wait error for peer {peer['id']}: {e.seconds} seconds")
             if attempt == max_retries - 1:
-                SUCCESS_RATE_STATS['failed_sends'] += 1
-                return False, PeerError(peer, f"Flood wait: {e.seconds} seconds")
+                # Let caller decide; return special reason so it can be kept in pack
+                return False, PeerError(peer, f"FLOOD_WAIT:{e.seconds}")
             await asyncio.sleep(e.seconds)
         except RPCError as e:
             log.error(f"RPC error for peer {peer['id']} on attempt {attempt + 1}: {e}")
@@ -491,6 +492,12 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                     packs_changed = True
                     log.info(f"Peers changed. Rebuilt task packs for new cycle {announcement.current_cycle} (count={len(announcement.task_packs)})")
 
+        # Initialize cycle totals/fail log for the first cycle
+        if getattr(announcement, 'cycle_totals', None) is None:
+            announcement.cycle_totals = {}
+        if getattr(announcement, 'failed_peers', None) is None:
+            announcement.failed_peers = []
+
         if packs_changed:
             await announcement_store.update_announcement(announcement)
 
@@ -503,7 +510,10 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
 
         # If all packs completed, start a new cycle (regenerate packs with cleared sent lists)
         if next_pack is None:
+            # Report stats for the completed cycle to driver before starting a new one
+            await _maybe_send_cycle_report(announcement, driver)
             announcement.current_cycle = int(getattr(announcement, 'current_cycle', 0)) + 1
+            # Reset failed peers list for new cycles but keep first cycle stats intact
             announcement.task_packs = _generate_task_packs(peers, cycle=announcement.current_cycle)
             await announcement_store.update_announcement(announcement)
             next_pack = announcement.task_packs[0] if announcement.task_packs else None
@@ -530,12 +540,48 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                     next_pack['sent_peer_ids'] = list(sent_ids)
                     await announcement_store.update_announcement(announcement)
                 else:
-                    total_failure += 1
-                    if error:
-                        log.error(f"Pack {next_pack.get('pack_id')} failed for peer {peer.get('title','?')} ({peer['id']}): {error.error}")
+                    # If FLOOD_WAIT, do not count as failure and keep it in the pack for next interval
+                    if error and isinstance(error, PeerError) and isinstance(error.error, str) and error.error.startswith('FLOOD_WAIT:'):
+                        log.info(f"Slow mode for {peer.get('title','?')} ({peer['id']}), will retry next interval")
+                    else:
+                        total_failure += 1
+                        if error:
+                            log.error(f"Pack {next_pack.get('pack_id')} failed for peer {peer.get('title','?')} ({peer['id']}): {error.error}")
+                            # Remove from pack so it won't block; record failure only for first cycle for reporting
+                            if announcement.current_cycle == 0:
+                                announcement.failed_peers.append({
+                                    'id': int(peer['id']),
+                                    'title': peer.get('title'),
+                                    'reason': error.error if isinstance(error.error, str) else str(error.error),
+                                    'cycle': announcement.current_cycle
+                                })
+                            # Notify driver immediately (best-effort)
+                            try:
+                                bot = Bot(token=settings['BOT_TOKEN'])
+                                await bot.send_message(chat_id=driver.tg_id, text=f"❌ '{peer.get('title','?')}' guruhiga yuborilmadi. Sabab: {error.error}")
+                            except Exception:
+                                pass
+                            # Remove peer from current pack permanently
+                            next_pack['peers'] = [pp for pp in next_pack['peers'] if int(pp['id']) != int(peer['id'])]
+                            await announcement_store.update_announcement(announcement)
             except Exception as e:
                 total_failure += 1
                 log.error(f"Unexpected error sending to peer {peer.get('title','?')} ({peer['id']}): {e}")
+                if announcement.current_cycle == 0:
+                    announcement.failed_peers.append({
+                        'id': int(peer['id']),
+                        'title': peer.get('title'),
+                        'reason': str(e),
+                        'cycle': announcement.current_cycle
+                    })
+                # Best-effort driver notification
+                try:
+                    bot = Bot(token=settings['BOT_TOKEN'])
+                    await bot.send_message(chat_id=driver.tg_id, text=f"❌ '{peer.get('title','?')}' guruhiga yuborilmadi. Sabab: {str(e)}")
+                except Exception:
+                    pass
+                next_pack['peers'] = [pp for pp in next_pack['peers'] if int(pp['id']) != int(peer['id'])]
+                await announcement_store.update_announcement(announcement)
 
         # Mark pack completed if all peers have been sent successfully
         if len(sent_ids) >= len(pack_peers) and len(pack_peers) > 0:
@@ -544,12 +590,54 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
 
         log.info(f"Announcement {announcement.id} pack {next_pack.get('pack_id')} done: {total_success} success, {total_failure} failure")
         return total_success, total_failure
-
     except Exception as e:
         log.error(f"Error processing announcement {announcement.id}: {e}")
         import traceback
         log.error(f"Traceback: {traceback.format_exc()}")
         return 0, 0
+
+async def _maybe_send_cycle_report(announcement: AnnouncementData, driver: Driver) -> None:
+    """Send first-cycle summary stats to the driver (once per completed cycle 0)."""
+    try:
+        # Count totals for the cycle
+        if announcement.current_cycle != 0:
+            return
+        # Total peers equals sum of peers in packs when cycle 0 was created
+        total_peers = 0
+        for p in announcement.task_packs or []:
+            total_peers += len(p.get('peers', []))
+        # Sent peers across packs
+        sent_peers = 0
+        for p in announcement.task_packs or []:
+            sent_peers += len(p.get('sent_peer_ids', []))
+        # Build report text
+        failed = [fp for fp in (announcement.failed_peers or []) if int(fp.get('cycle', 0)) == 0]
+        failed_count = len(failed)
+        success_count = sent_peers
+        report_lines = []
+        report_lines.append(f"📊 Sikl 1 statistikasi: {success_count}/{total_peers}")
+        if failed_count > 0:
+            # Aggregate reasons
+            reason_map: Dict[str, List[str]] = {}
+            for it in failed:
+                reason = it.get('reason', 'unknown')
+                reason_map.setdefault(reason, []).append(it.get('title') or str(it.get('id')))
+            report_lines.append("")
+            report_lines.append(f"{failed_count} guruhga yuborilmadi:")
+            for reason, names in reason_map.items():
+                report_lines.append(f"{reason}")
+                # list up to 20 names to avoid too long message
+                show_names = names[:20]
+                for nm in show_names:
+                    report_lines.append(f"- {nm}")
+                if len(names) > 20:
+                    report_lines.append(f"… va yana {len(names)-20} ta")
+        text = "\n".join(report_lines)
+        # Send to driver
+        bot = Bot(token=settings['BOT_TOKEN'])
+        await bot.send_message(chat_id=driver.tg_id, text=text)
+    except Exception as e:
+        log.error(f"Error sending cycle report: {e}")
 
 async def execute_due_announcements() -> None:
     """Execute announcements that are due to run."""
