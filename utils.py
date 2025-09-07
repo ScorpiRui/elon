@@ -25,6 +25,9 @@ from driver_store import driver_store, Driver
 with open('config.json', 'r', encoding='utf-8') as f:
     settings = json.load(f)
 
+# Create global bot instance to avoid session leaks
+bot = Bot(token=settings['BOT_TOKEN'])
+
 # Get encoding settings
 ENCODING_SETTINGS = settings.get('ENCODING_SETTINGS', {
     'DEFAULT_ENCODING': 'utf-8',
@@ -546,7 +549,6 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                                         'cycle': announcement.current_cycle
                                     })
                                 try:
-                                    bot = Bot(token=settings['BOT_TOKEN'])
                                     await bot.send_message(chat_id=driver.tg_id, text=f"❌ '{peer.get('title','?')}' guruhiga yuborilmadi. Sabab: {error.error}")
                                 except Exception:
                                     pass
@@ -565,7 +567,6 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                             'cycle': announcement.current_cycle
                         })
                     try:
-                        bot = Bot(token=settings['BOT_TOKEN'])
                         await bot.send_message(chat_id=driver.tg_id, text=f"❌ '{peer.get('title','?')}' guruhiga yuborilmadi. Sabab: {str(e)}")
                     except Exception:
                         pass
@@ -638,7 +639,6 @@ async def _maybe_send_cycle_report(announcement: AnnouncementData, driver: Drive
                     report_lines.append(f"… va yana {len(names)-20} ta")
         text = "\n".join(report_lines)
         # Send to driver
-        bot = Bot(token=settings['BOT_TOKEN'])
         await bot.send_message(chat_id=driver.tg_id, text=text)
     except Exception as e:
         log.error(f"Error sending cycle report: {e}")
@@ -826,7 +826,6 @@ async def send_telegram_notification(
         if message:
             message = unicodedata.normalize('NFC', message)
         
-        bot = Bot(token=settings['BOT_TOKEN'])
         for admin_id in settings['ADMINS']:
             try:
                 await bot.send_message(
