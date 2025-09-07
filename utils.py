@@ -420,7 +420,7 @@ async def send_message_with_retry(
     return False, PeerError(peer, "Max retries exceeded")
 
 async def process_single_announcement(announcement: AnnouncementData) -> Tuple[int, int]:
-    """Process a single announcement."""
+    """Process a single announcement by sending one persistent 10-peer task pack per interval."""
     try:
         log.info(f"Starting to process announcement {announcement.id} for driver {announcement.driver_id}")
         
@@ -446,36 +446,103 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
 
         log.info(f"Got client for driver {driver.tg_id}")
 
-        # Get peers from folder
+        # Get peers from folder (cached) and ensure deterministic ordering
         peers = await get_folder_peers(client, announcement.folder_title)
         if not peers:
             log.error(f"No peers found in folder {announcement.folder_title} for driver {driver.tg_id}")
             return 0, 0
+        # Sort by id for stable packs
+        peers = sorted(peers, key=lambda p: int(p.get('id', 0)))
 
-        log.info(f"Found {len(peers)} peers in folder '{announcement.folder_title}'")
+        # Helper to (re)generate task packs of 10
+        def _generate_task_packs(all_peers: List[Dict], cycle: int) -> List[Dict[str, Any]]:
+            packs: List[Dict[str, Any]] = []
+            pack_size = 10
+            for idx in range(0, len(all_peers), pack_size):
+                batch = all_peers[idx:idx + pack_size]
+                packs.append({
+                    'pack_id': f"{announcement.id}:{cycle}:{idx//pack_size}",
+                    'peers': batch,
+                    'sent_peer_ids': [],
+                    'completed': False
+                })
+            return packs
 
-        # Process peers in batches
-        batch_size = 10
+        # Initialize or validate existing packs against current peers snapshot
+        packs_changed = False
+        if not getattr(announcement, 'task_packs', None):
+            announcement.task_packs = _generate_task_packs(peers, cycle=0)
+            announcement.current_cycle = 0
+            packs_changed = True
+            log.info(f"Generated {len(announcement.task_packs)} task packs for announcement {announcement.id}")
+        else:
+            # Validate peers set consistency; if membership drastically changed, rebuild packs for next cycle
+            existing_peer_ids: Set[int] = set()
+            for p in announcement.task_packs:
+                for peer in p.get('peers', []):
+                    existing_peer_ids.add(int(peer['id']))
+            current_peer_ids: Set[int] = {int(p['id']) for p in peers}
+            if existing_peer_ids != current_peer_ids:
+                # Rebuild packs using current peers, but only if all current packs are completed; otherwise keep current to finish
+                all_completed = all(p.get('completed') for p in announcement.task_packs)
+                if all_completed:
+                    announcement.current_cycle = int(getattr(announcement, 'current_cycle', 0)) + 1
+                    announcement.task_packs = _generate_task_packs(peers, cycle=announcement.current_cycle)
+                    packs_changed = True
+                    log.info(f"Peers changed. Rebuilt task packs for new cycle {announcement.current_cycle} (count={len(announcement.task_packs)})")
+
+        if packs_changed:
+            await announcement_store.update_announcement(announcement)
+
+        # Find the next pack to process: first not completed pack
+        next_pack = None
+        for p in announcement.task_packs or []:
+            if not p.get('completed'):
+                next_pack = p
+                break
+
+        # If all packs completed, start a new cycle (regenerate packs with cleared sent lists)
+        if next_pack is None:
+            announcement.current_cycle = int(getattr(announcement, 'current_cycle', 0)) + 1
+            announcement.task_packs = _generate_task_packs(peers, cycle=announcement.current_cycle)
+            await announcement_store.update_announcement(announcement)
+            next_pack = announcement.task_packs[0] if announcement.task_packs else None
+
+        if next_pack is None:
+            return 0, 0
+
+        # Prepare unsent peers within this pack
+        sent_ids: Set[int] = set(int(x) for x in next_pack.get('sent_peer_ids', []))
+        pack_peers: List[Dict] = next_pack.get('peers', [])
+        unsent_peers: List[Dict] = [p for p in pack_peers if int(p['id']) not in sent_ids and int(p['id']) not in SUCCESS_RATE_STATS['banned_channels']]
+
         total_success = 0
         total_failure = 0
-        all_errors = []
 
-        for i in range(0, len(peers), batch_size):
-            batch = peers[i:i + batch_size]
-            log.info(f"Processing batch {i//batch_size + 1}/{(len(peers) + batch_size - 1)//batch_size} with {len(batch)} peers")
-            success, failure, errors = await process_peer_batch(
-                client, batch, announcement.text,
-                f"{announcement.id}_{i//batch_size}",
-                announcement.id
-            )
-            total_success += success
-            total_failure += failure
-            all_errors.extend(errors)
+        # Send sequentially, updating JSON after each success to allow resume after crash
+        for i, peer in enumerate(unsent_peers, 1):
+            try:
+                success, error = await send_message_with_retry(client, peer, announcement.text)
+                if success:
+                    total_success += 1
+                    sent_ids.add(int(peer['id']))
+                    # Persist progress
+                    next_pack['sent_peer_ids'] = list(sent_ids)
+                    await announcement_store.update_announcement(announcement)
+                else:
+                    total_failure += 1
+                    if error:
+                        log.error(f"Pack {next_pack.get('pack_id')} failed for peer {peer.get('title','?')} ({peer['id']}): {error.error}")
+            except Exception as e:
+                total_failure += 1
+                log.error(f"Unexpected error sending to peer {peer.get('title','?')} ({peer['id']}): {e}")
 
-        if all_errors:
-            log.error(f"Errors during announcement {announcement.id}: {[e.error for e in all_errors]}")
+        # Mark pack completed if all peers have been sent successfully
+        if len(sent_ids) >= len(pack_peers) and len(pack_peers) > 0:
+            next_pack['completed'] = True
+            await announcement_store.update_announcement(announcement)
 
-        log.info(f"Announcement {announcement.id} completed: {total_success} success, {total_failure} failure")
+        log.info(f"Announcement {announcement.id} pack {next_pack.get('pack_id')} done: {total_success} success, {total_failure} failure")
         return total_success, total_failure
 
     except Exception as e:

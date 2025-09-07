@@ -38,6 +38,10 @@ class AnnouncementData:
     folder_title: str
     is_running: bool = False
     created_at: str = None  # ISO format datetime string
+    # Persistent task packs: list of packs; each pack has:
+    # {"pack_id": str, "peers": List[Dict[id,title,type]], "sent_peer_ids": List[int], "completed": bool}
+    task_packs: Optional[List[Dict[str, Any]]] = None
+    current_cycle: int = 0
 
     def __post_init__(self):
         if self.created_at is None:
