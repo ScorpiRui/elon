@@ -7,10 +7,10 @@ Wants=network.target
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/root/elon
+WorkingDirectory=/home/ubuntu/elon
 Environment=PATH=/usr/bin:/usr/local/bin
-Environment=PYTHONPATH=/root/elon
-ExecStart=/usr/bin/python3 /root/elon/main.py
+Environment=PYTHONPATH=/home/ubuntu/elon
+ExecStart=/usr/bin/python3 /home/ubuntu/elon/main.py
 ExecStartPost=/bin/sleep 30
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
@@ -22,15 +22,15 @@ StandardError=journal
 SyslogIdentifier=elon-bot
 
 # Health check and monitoring
-ExecStartPost=/usr/bin/python3 /root/elon/health_check.py check
-ExecReload=/usr/bin/python3 /root/elon/health_check.py check
+ExecStartPost=/usr/bin/python3 /home/ubuntu/elon/health_check.py check
+ExecReload=/usr/bin/python3 /home/ubuntu/elon/health_check.py check
 
 # Security settings
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/root/elon
+ReadWritePaths=/home/ubuntu/elon
 
 # Resource limits
 LimitNOFILE=65536

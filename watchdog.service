@@ -7,10 +7,10 @@ Wants=elon-bot.service
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/root/elon
+WorkingDirectory=/home/ubuntu/elon
 Environment=PATH=/usr/bin:/usr/local/bin
-Environment=PYTHONPATH=/root/elon
-ExecStart=/usr/bin/python3 /root/elon/bot_watchdog.py --interval 60 --max-restarts 3
+Environment=PYTHONPATH=/home/ubuntu/elon
+ExecStart=/usr/bin/python3 /home/ubuntu/elon/bot_watchdog.py --interval 60 --max-restarts 3
 Restart=always
 RestartSec=30
 StandardOutput=journal
@@ -22,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/root/elon
+ReadWritePaths=/home/ubuntu/elon
 
 # Resource limits
 LimitNOFILE=65536
