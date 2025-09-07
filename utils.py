@@ -590,7 +590,8 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
 
             # Recompute remaining of this pack
             pack_peers_after: List[Dict] = list(next_pack.get('peers', []))
-            if len(sent_ids) >= len(pack_peers_after) and len(pack_peers_after) > 0:
+            # If all peers in this pack are sent OR pack is empty after removals, complete and delete the pack
+            if len(pack_peers_after) == 0 or len(sent_ids) >= len(pack_peers_after):
                 next_pack['completed'] = True
                 await announcement_store.update_announcement(announcement)
                 # delete pack from list
@@ -606,14 +607,13 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
 
             # If pack is not completed but no FLOOD_WAIT (e.g., only banned removed), check again:
             remaining_unsent = [p for p in next_pack.get('peers', []) if int(p['id']) not in set(next_pack.get('sent_peer_ids', []))]
-            if not remaining_unsent and len(next_pack.get('peers', [])) > 0:
+            if not remaining_unsent:
                 next_pack['completed'] = True
                 announcement.task_packs = [p for p in announcement.task_packs if p.get('pack_id') != next_pack.get('pack_id')]
                 await announcement_store.update_announcement(announcement)
                 continue
-            else:
-                # Nothing more to do this run
-                break
+            # Nothing more to do this run
+            break
 
         log.info(f"Announcement {announcement.id} run summary: {total_success} success, {total_failure} failure")
         return total_success, total_failure
