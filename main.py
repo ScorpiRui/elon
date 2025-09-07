@@ -1140,45 +1140,6 @@ async def delete_session_command(message: types.Message):
         await message.answer("❌ O'chiriladigan seans mavjud emas.", reply_markup=main_menu(False))
 
 
-@router.message(Command("stats"))
-async def stats_command(message: types.Message):
-    """Handler for admin command to get success rate statistics."""
-    user_id = message.from_user.id
-
-    # Check if user is an admin
-    if not await is_admin(user_id):
-        await message.answer("❌ Bu buyruq faqat adminlar uchun.")
-        return
-
-    try:
-        from utils import SUCCESS_RATE_STATS
-        
-        if SUCCESS_RATE_STATS['total_attempts'] == 0:
-            await message.answer("📊 Hali hech qanday xabar yuborilmagan.")
-            return
-            
-        success_rate = (SUCCESS_RATE_STATS['successful_sends'] / SUCCESS_RATE_STATS['total_attempts']) * 100
-        
-        stats_message = f"""📊 **Muvaffaqiyat foizi hisoboti**
-
-✅ Muvaffaqiyatli yuborilgan: {SUCCESS_RATE_STATS['successful_sends']}
-❌ Muvaffaqiyatsiz: {SUCCESS_RATE_STATS['failed_sends']}
-📈 Jami urinishlar: {SUCCESS_RATE_STATS['total_attempts']}
-🎯 Muvaffaqiyat foizi: {success_rate:.2f}%
-
-🚫 Ban qilingan kanallar: {len(SUCCESS_RATE_STATS['banned_channels'])}
-"""
-        
-        if SUCCESS_RATE_STATS['banned_channels']:
-            stats_message += "\n🚫 **Ban qilingan kanallar:**\n"
-            for channel_id in SUCCESS_RATE_STATS['banned_channels']:
-                stats_message += f"• ID: {channel_id}\n"
-        
-        await message.answer(stats_message, parse_mode="HTML")
-        
-    except Exception as e:
-        await message.answer(f"❌ Xatolik yuz berdi: {e}")
-        log.error(f"Error in stats command: {e}")
 
 @router.message(Command("delete"))
 async def delete_driver_command(message: types.Message):

@@ -330,7 +330,7 @@ async def send_message_with_retry(
     client: TelegramClient,
     peer: Dict,
     text: str,
-    max_retries: int = 3
+    max_retries: int = 1
 ) -> Tuple[bool, Optional[PeerError]]:
     """Send message to a peer with retry logic."""
     # Determine driver id from cached mapping by reverse lookup
@@ -375,53 +375,43 @@ async def send_message_with_retry(
     # Update total attempts
     SUCCESS_RATE_STATS['total_attempts'] += 1
     
-    for attempt in range(max_retries):
-        try:
-            if api_lock:
-                async with api_lock:
-                    await _rate_limit()
-                    # Use parse_mode=None to ensure raw text is sent
-                    result = await client.send_message(peer['id'], text, parse_mode=None)
-                    log.info(f"Message sent successfully to {peer.get('title', 'Unknown')} (ID: {peer['id']}) on attempt {attempt + 1}")
-                    SUCCESS_RATE_STATS['successful_sends'] += 1
-                    return True, None
-            else:
+    try:
+        if api_lock:
+            async with api_lock:
+                await _rate_limit()
+                # Use parse_mode=None to ensure raw text is sent
                 result = await client.send_message(peer['id'], text, parse_mode=None)
-                log.info(f"Message sent successfully to {peer.get('title', 'Unknown')} (ID: {peer['id']}) on attempt {attempt + 1}")
+                log.info(f"Message sent successfully to {peer.get('title', 'Unknown')} (ID: {peer['id']}) on attempt 1")
                 SUCCESS_RATE_STATS['successful_sends'] += 1
                 return True, None
-        except FloodWaitError as e:
-            # Slow mode / floodwait: do not mark as failed, just delay and retry
-            log.warning(f"Flood wait error for peer {peer['id']}: {e.seconds} seconds")
-            if attempt == max_retries - 1:
-                # Let caller decide; return special reason so it can be kept in pack
-                return False, PeerError(peer, f"FLOOD_WAIT:{e.seconds}")
-            await asyncio.sleep(e.seconds)
-        except RPCError as e:
-            log.error(f"RPC error for peer {peer['id']} on attempt {attempt + 1}: {e}")
+        else:
+            result = await client.send_message(peer['id'], text, parse_mode=None)
+            log.info(f"Message sent successfully to {peer.get('title', 'Unknown')} (ID: {peer['id']}) on attempt 1")
+            SUCCESS_RATE_STATS['successful_sends'] += 1
+            return True, None
+    except FloodWaitError as e:
+        # Slow mode / floodwait: return special reason so it can be kept in pack for next cycle
+        log.warning(f"Flood wait error for peer {peer['id']}: {e.seconds} seconds - will retry next cycle")
+        return False, PeerError(peer, f"FLOOD_WAIT:{e.seconds}")
+    except RPCError as e:
+        log.error(f"RPC error for peer {peer['id']}: {e}")
+        
+        # Track banned channels
+        if "banned from sending messages" in str(e).lower():
+            channel_id = peer['id']
+            BANNED_CHANNELS[channel_id] = BANNED_CHANNELS.get(channel_id, 0) + 1
+            log.warning(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) banned attempt {BANNED_CHANNELS[channel_id]}/{MAX_ERROR_ATTEMPTS}")
             
-            # Track banned channels
-            if "banned from sending messages" in str(e).lower():
-                channel_id = peer['id']
-                BANNED_CHANNELS[channel_id] = BANNED_CHANNELS.get(channel_id, 0) + 1
-                log.warning(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) banned attempt {BANNED_CHANNELS[channel_id]}/{MAX_ERROR_ATTEMPTS}")
-                
-                if BANNED_CHANNELS[channel_id] >= MAX_ERROR_ATTEMPTS:
-                    SUCCESS_RATE_STATS['banned_channels'].add(channel_id)
-                    log.error(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) permanently banned after {MAX_ERROR_ATTEMPTS} attempts")
-            
-            if attempt == max_retries - 1:
-                SUCCESS_RATE_STATS['failed_sends'] += 1
-                return False, PeerError(peer, str(e))
-            await asyncio.sleep(1)
-        except Exception as e:
-            log.error(f"Unexpected error for peer {peer['id']} on attempt {attempt + 1}: {e}")
-            if attempt == max_retries - 1:
-                SUCCESS_RATE_STATS['failed_sends'] += 1
-                return False, PeerError(peer, str(e))
-            await asyncio.sleep(1)
-
-    return False, PeerError(peer, "Max retries exceeded")
+            if BANNED_CHANNELS[channel_id] >= MAX_ERROR_ATTEMPTS:
+                SUCCESS_RATE_STATS['banned_channels'].add(channel_id)
+                log.error(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) permanently banned after {MAX_ERROR_ATTEMPTS} attempts")
+        
+        SUCCESS_RATE_STATS['failed_sends'] += 1
+        return False, PeerError(peer, str(e))
+    except Exception as e:
+        log.error(f"Unexpected error for peer {peer['id']}: {e}")
+        SUCCESS_RATE_STATS['failed_sends'] += 1
+        return False, PeerError(peer, str(e))
 
 async def process_single_announcement(announcement: AnnouncementData) -> Tuple[int, int]:
     """Process a single announcement by sending persistent 10-peer packs sequentially per run.
@@ -699,18 +689,12 @@ async def execute_due_announcements() -> None:
 async def scheduler_loop() -> None:
     """Main scheduler loop."""
     log.info("Scheduler loop started")
-    report_counter = 0
     while True:
         try:
             log.info("Scheduler iteration starting...")
             await execute_due_announcements()
             log.info("Scheduler iteration completed")
             
-            # Send success rate report every 10 minutes (20 iterations * 30 seconds)
-            report_counter += 1
-            if report_counter >= 20:  # 10 minutes
-                await send_success_rate_report()
-                report_counter = 0
                 
         except Exception as e:
             log.error(f"Error in scheduler loop: {e}")
@@ -786,33 +770,6 @@ async def notify_admin(
     except Exception as e:
         log.error(f"Error sending admin notification: {e}")
 
-async def send_success_rate_report():
-    """Send success rate report to admin."""
-    try:
-        if SUCCESS_RATE_STATS['total_attempts'] == 0:
-            return
-            
-        success_rate = (SUCCESS_RATE_STATS['successful_sends'] / SUCCESS_RATE_STATS['total_attempts']) * 100
-        
-        report = f"""📊 **Muvaffaqiyat foizi hisoboti**
-
-✅ Muvaffaqiyatli yuborilgan: {SUCCESS_RATE_STATS['successful_sends']}
-❌ Muvaffaqiyatsiz: {SUCCESS_RATE_STATS['failed_sends']}
-📈 Jami urinishlar: {SUCCESS_RATE_STATS['total_attempts']}
-🎯 Muvaffaqiyat foizi: {success_rate:.2f}%
-
-🚫 Ban qilingan kanallar: {len(SUCCESS_RATE_STATS['banned_channels'])}
-"""
-        
-        if SUCCESS_RATE_STATS['banned_channels']:
-            report += "\n🚫 **Ban qilingan kanallar:**\n"
-            for channel_id in SUCCESS_RATE_STATS['banned_channels']:
-                report += f"• ID: {channel_id}\n"
-        
-        await notify_admin(report, "SUCCESS_RATE_REPORT")
-        
-    except Exception as e:
-        log.error(f"Error sending success rate report: {e}")
 
 async def send_telegram_notification(
     message: str,
