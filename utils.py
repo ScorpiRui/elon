@@ -20,6 +20,7 @@ from aiogram import Bot
 
 from announcement_store import announcement_store, AnnouncementData
 from driver_store import driver_store, Driver
+from timing_manager import get_timing
 
 # Load settings from config file
 with open('config.json', 'r', encoding='utf-8') as f:
@@ -57,8 +58,8 @@ _client_last_used: Dict[int, datetime] = {}
 _driver_rate_window: Dict[int, List[float]] = {}  # timestamps of recent sends per driver
 _driver_send_queues: Dict[int, asyncio.Queue] = {}
 _driver_workers_started: Dict[int, bool] = {}
-_MAX_MSGS_PER_WINDOW = 20
-_RATE_WINDOW_SECONDS = 60
+_MAX_MSGS_PER_WINDOW = get_timing('max_messages_per_window', 20)
+_RATE_WINDOW_SECONDS = get_timing('rate_limit_window_seconds', 60)
 _FOLDER_CACHE_TTL_SECONDS = int(settings.get('FOLDER_CACHE_TTL_SECONDS', 7200))  # default 2 hours
 _folder_cache: Dict[str, Tuple[float, List[Dict]]] = {}
 
@@ -569,8 +570,9 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                 log.info(f"Pack {next_pack.get('pack_id')} paused due to FLOOD_WAIT; moving on to next pack")
                 continue
             
-            # Add 5 second timeout between packs
-            await asyncio.sleep(5)
+            # Add configurable timeout between packs
+            pack_timeout = get_timing('pack_timeout_seconds', 5)
+            await asyncio.sleep(pack_timeout)
 
         # If after processing snapshot no packs remain, close cycle
         if not (announcement.task_packs or []):
@@ -697,7 +699,8 @@ async def scheduler_loop() -> None:
             log.error(f"Error in scheduler loop: {e}")
             import traceback
             log.error(f"Traceback: {traceback.format_exc()}")
-        await asyncio.sleep(30)  # Check every 30 seconds for better precision
+        scheduler_interval = get_timing('scheduler_interval_seconds', 30)
+        await asyncio.sleep(scheduler_interval)  # Check every N seconds for better precision
 
 async def ensure_scheduler_running():
     """Ensure the scheduler is running."""
@@ -1035,4 +1038,5 @@ async def _cache_cleanup_loop():
             import traceback
             log.error(f"Traceback: {traceback.format_exc()}")
 
-        await asyncio.sleep(60)  # Run every minute instead of 5 minutes
+        cache_cleanup_interval = get_timing('cache_cleanup_interval_minutes', 1) * 60
+        await asyncio.sleep(cache_cleanup_interval)  # Run every N minutes

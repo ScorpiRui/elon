@@ -1,0 +1,45 @@
+[Unit]
+Description=Elon Telegram Bot Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/elon
+Environment=PATH=/usr/bin:/usr/local/bin
+Environment=PYTHONPATH=/root/elon
+ExecStart=/usr/bin/python3 /root/elon/main.py
+ExecStartPost=/bin/sleep 30
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=15
+StartLimitInterval=300
+StartLimitBurst=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=elon-bot
+
+# Health check and monitoring
+ExecStartPost=/usr/bin/python3 /root/elon/health_check.py check
+ExecReload=/usr/bin/python3 /root/elon/health_check.py check
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/root/elon
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=512M
+CPUQuota=80%
+
+# Watchdog settings
+WatchdogSec=300
+NotifyAccess=all
+
+[Install]
+WantedBy=multi-user.target
