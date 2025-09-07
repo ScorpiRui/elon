@@ -105,9 +105,7 @@ class AnnouncementState:
 # Create global state instance
 state = AnnouncementState()
 
-# Banned channels tracking
-BANNED_CHANNELS = {}  # {channel_id: error_count}
-MAX_ERROR_ATTEMPTS = 5
+# Banned channels tracking (now handled in SUCCESS_RATE_STATS)
 SUCCESS_RATE_STATS = {
     'total_attempts': 0,
     'successful_sends': 0,
@@ -396,15 +394,11 @@ async def send_message_with_retry(
     except RPCError as e:
         log.error(f"RPC error for peer {peer['id']}: {e}")
         
-        # Track banned channels
+        # Track banned channels - immediately mark as banned
         if "banned from sending messages" in str(e).lower():
             channel_id = peer['id']
-            BANNED_CHANNELS[channel_id] = BANNED_CHANNELS.get(channel_id, 0) + 1
-            log.warning(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) banned attempt {BANNED_CHANNELS[channel_id]}/{MAX_ERROR_ATTEMPTS}")
-            
-            if BANNED_CHANNELS[channel_id] >= MAX_ERROR_ATTEMPTS:
-                SUCCESS_RATE_STATS['banned_channels'].add(channel_id)
-                log.error(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) permanently banned after {MAX_ERROR_ATTEMPTS} attempts")
+            SUCCESS_RATE_STATS['banned_channels'].add(channel_id)
+            log.warning(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) is banned - removing from list")
         
         SUCCESS_RATE_STATS['failed_sends'] += 1
         return False, PeerError(peer, str(e))
@@ -574,6 +568,9 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
             if saw_flood_wait:
                 log.info(f"Pack {next_pack.get('pack_id')} paused due to FLOOD_WAIT; moving on to next pack")
                 continue
+            
+            # Add 5 second timeout between packs
+            await asyncio.sleep(5)
 
         # If after processing snapshot no packs remain, close cycle
         if not (announcement.task_packs or []):
