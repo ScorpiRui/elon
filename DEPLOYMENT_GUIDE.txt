@@ -210,8 +210,8 @@ TIMING BOSHQARISH:
 UMUMIY MUAMMOLAR:
 
 1. SERVICE ISHGA TUSHMAYDI:
-   • sudo systemctl status elon-bot
-   • sudo journalctl -u elon-bot -n 50
+   • systemctl status elon-bot
+   • journalctl -u elon-bot -n 50
    • config.json faylini tekshiring
    • Python dependencies o'rnatilganligini tekshiring
 
@@ -220,8 +220,8 @@ UMUMIY MUAMMOLAR:
    • Bot @BotFather orqali yaratilganligini tekshiring
 
 3. PERMISSION XATOLIGLARI:
-   • sudo chown -R ubuntu:ubuntu /home/ubuntu/elon
-   • sudo chmod -R 755 /home/ubuntu/elon
+   • chown -R root:root /root/elon
+   • chmod -R 755 /root/elon
 
 4. DEPENDENCIES XATOLIGI:
    • pip3 install -r req.txt --upgrade
@@ -229,26 +229,37 @@ UMUMIY MUAMMOLAR:
 
 5. MEMORY YETARLI EMAS:
    • free -h
-   • swap qo'shing: sudo fallocate -l 1G /swapfile
+   • swap qo'shing: fallocate -l 1G /swapfile
 
 6. NETWORK MUAMMOLARI:
    • ping api.telegram.org
    • Firewall sozlamalarini tekshiring
 
+7. KATTA GURUHLAR MUAMMOSI (80+ guruh):
+   • Bot crash bo'lsa: timing_config.json da sozlamalarni kamaytiring
+   • max_messages_per_window: 5 ga kamaytiring
+   • peer_batch_size: 3 ga kamaytiring
+   • batch_delay_seconds: 5 ga oshiring
+   • scheduler_interval_seconds: 120 ga oshiring
+   • Flood wait xatolari ko'p bo'lsa: botni restart qiling
+
 DEPLOYMENT MUAMMOLARI:
-• ./fix_deployment.sh                  # Avtomatik tuzatish
-• sudo systemctl daemon-reload         # Systemd reload
-• sudo systemctl reset-failed          # Failed service'larni reset
+• ./deploy.sh --fix-only               # Avtomatik tuzatish
+• systemctl daemon-reload              # Systemd reload
+• systemctl reset-failed               # Failed service'larni reset
 
 ================================================================================
 📈 PERFORMANCE OPTIMIZATION
 ================================================================================
 
 TIMING SOZLAMALARI:
-• pack_timeout_seconds: 5-15 (xabar yuborish timeout)
-• scheduler_interval_seconds: 30-60 (scheduler tezligi)
-• max_messages_per_window: 10-30 (rate limiting)
-• cache_cleanup_interval_minutes: 1-5 (cache tozalash)
+• pack_timeout_seconds: 10-15 (xabar yuborish timeout)
+• scheduler_interval_seconds: 60-120 (scheduler tezligi - katta guruhlar uchun)
+• max_messages_per_window: 5-10 (rate limiting - katta guruhlar uchun kamroq)
+• cache_cleanup_interval_minutes: 2-5 (cache tozalash)
+• batch_delay_seconds: 3-5 (batch'lar orasida kutish)
+• peer_batch_size: 3-5 (kichik batch'lar)
+• max_concurrent_announcements: 2-3 (parallel e'lonlar soni)
 
 RESOURCE LIMITS (elon-bot.service):
 • MemoryMax=512M                       # Maksimal memory

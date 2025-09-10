@@ -205,7 +205,7 @@ class BotHealthChecker:
                     cmdline = proc.info.get('cmdline', [])
                     if cmdline and any('main.py' in arg for arg in cmdline):
                         memory_mb = proc.info['memory_info'].rss / 1024 / 1024
-                        if memory_mb > 300:  # More than 300MB
+                        if memory_mb > 500:  # Increased threshold to 500MB
                             issues.append(f"High memory usage: {memory_mb:.1f}MB")
                         break
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -217,11 +217,22 @@ class BotHealthChecker:
                     cmdline = proc.info.get('cmdline', [])
                     if cmdline and any('main.py' in arg for arg in cmdline):
                         cpu_percent = proc.cpu_percent()
-                        if cpu_percent > 90:  # More than 90% CPU
+                        if cpu_percent > 95:  # Increased threshold to 95%
                             issues.append(f"High CPU usage: {cpu_percent:.1f}%")
                         break
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
+            
+            # Check for flood wait errors in logs
+            try:
+                if os.path.exists('announcement_debug.log'):
+                    with open('announcement_debug.log', 'r', encoding='utf-8') as f:
+                        recent_logs = f.readlines()[-100:]  # Last 100 lines
+                        flood_waits = sum(1 for line in recent_logs if 'FLOOD_WAIT' in line or 'Flood wait' in line)
+                        if flood_waits > 10:  # More than 10 flood waits in recent logs
+                            issues.append(f"High flood wait frequency: {flood_waits} recent flood waits")
+            except Exception:
+                pass
             
             self.health_status['performance_issues'] = issues
             return issues

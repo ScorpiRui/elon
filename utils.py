@@ -58,8 +58,11 @@ _client_last_used: Dict[int, datetime] = {}
 _driver_rate_window: Dict[int, List[float]] = {}  # timestamps of recent sends per driver
 _driver_send_queues: Dict[int, asyncio.Queue] = {}
 _driver_workers_started: Dict[int, bool] = {}
-_MAX_MSGS_PER_WINDOW = get_timing('max_messages_per_window', 20)
+_MAX_MSGS_PER_WINDOW = get_timing('max_messages_per_window', 8)
 _RATE_WINDOW_SECONDS = get_timing('rate_limit_window_seconds', 60)
+_BATCH_DELAY_SECONDS = get_timing('batch_delay_seconds', 3)
+_PEER_BATCH_SIZE = get_timing('peer_batch_size', 5)
+_MAX_CONCURRENT_ANNOUNCEMENTS = get_timing('max_concurrent_announcements', 3)
 _FOLDER_CACHE_TTL_SECONDS = int(settings.get('FOLDER_CACHE_TTL_SECONDS', 7200))  # default 2 hours
 _folder_cache: Dict[str, Tuple[float, List[Dict]]] = {}
 
@@ -288,7 +291,7 @@ async def process_peer_batch(
     batch_id: str,
     announcement_id: int
 ) -> Tuple[int, int, List[PeerError]]:
-    """Process a batch of peers for message sending."""
+    """Process a batch of peers for message sending with improved rate limiting."""
     # Ensure proper text encoding for Unicode characters (including Cyrillic)
     import unicodedata
     if text:
@@ -298,29 +301,46 @@ async def process_peer_batch(
     success_count = 0
     failure_count = 0
     errors = []
-
-    for i, peer in enumerate(peers):
-        try:
-            # Check if channel is banned
-            if peer['id'] in SUCCESS_RATE_STATS['banned_channels']:
-                log.info(f"Skipping banned channel {peer.get('title', 'Unknown')} (ID: {peer['id']})")
+    
+    # Process peers in smaller sub-batches to avoid overwhelming the API
+    sub_batch_size = _PEER_BATCH_SIZE
+    for i in range(0, len(peers), sub_batch_size):
+        sub_batch = peers[i:i + sub_batch_size]
+        log.info(f"Processing sub-batch {i//sub_batch_size + 1}/{(len(peers) + sub_batch_size - 1)//sub_batch_size} with {len(sub_batch)} peers")
+        
+        for j, peer in enumerate(sub_batch):
+            try:
+                # Check if channel is banned
+                if peer['id'] in SUCCESS_RATE_STATS['banned_channels']:
+                    log.info(f"Skipping banned channel {peer.get('title', 'Unknown')} (ID: {peer['id']})")
+                    failure_count += 1
+                    continue
+                    
+                log.info(f"Processing peer {i+j+1}/{len(peers)}: {peer.get('title', 'Unknown')} (ID: {peer['id']})")
+                success, error = await send_message_with_retry(client, peer, text)
+                if success:
+                    success_count += 1
+                    log.info(f"Successfully sent to peer {i+j+1}/{len(peers)}: {peer.get('title', 'Unknown')}")
+                else:
+                    failure_count += 1
+                    if error:
+                        errors.append(error)
+                        log.error(f"Failed to send to peer {i+j+1}/{len(peers)}: {peer.get('title', 'Unknown')} - {error.error}")
+                        
+                        # If it's a flood wait error, break the entire batch to avoid more flood waits
+                        if "FLOOD_WAIT" in str(error.error):
+                            log.warning(f"Flood wait detected, stopping batch processing to avoid more flood waits")
+                            return success_count, failure_count, errors
+                            
+            except Exception as e:
                 failure_count += 1
-                continue
-                
-            log.info(f"Processing peer {i+1}/{len(peers)}: {peer.get('title', 'Unknown')} (ID: {peer['id']})")
-            success, error = await send_message_with_retry(client, peer, text)
-            if success:
-                success_count += 1
-                log.info(f"Successfully sent to peer {i+1}/{len(peers)}: {peer.get('title', 'Unknown')}")
-            else:
-                failure_count += 1
-                if error:
-                    errors.append(error)
-                    log.error(f"Failed to send to peer {i+1}/{len(peers)}: {peer.get('title', 'Unknown')} - {error.error}")
-        except Exception as e:
-            failure_count += 1
-            errors.append(PeerError(peer, str(e)))
-            log.error(f"Exception sending to peer {i+1}/{len(peers)}: {peer.get('title', 'Unknown')} - {e}")
+                errors.append(PeerError(peer, str(e)))
+                log.error(f"Exception sending to peer {i+j+1}/{len(peers)}: {peer.get('title', 'Unknown')} - {e}")
+        
+        # Add delay between sub-batches to respect rate limits
+        if i + sub_batch_size < len(peers):
+            log.info(f"Waiting {_BATCH_DELAY_SECONDS} seconds before next sub-batch...")
+            await asyncio.sleep(_BATCH_DELAY_SECONDS)
 
     log.info(f"Batch {batch_id} completed: {success_count} success, {failure_count} failure")
     return success_count, failure_count, errors
@@ -391,6 +411,8 @@ async def send_message_with_retry(
     except FloodWaitError as e:
         # Slow mode / floodwait: return special reason so it can be kept in pack for next cycle
         log.warning(f"Flood wait error for peer {peer['id']}: {e.seconds} seconds - will retry next cycle")
+        # Add extra delay to prevent immediate retry
+        await asyncio.sleep(min(e.seconds, 30))  # Cap at 30 seconds
         return False, PeerError(peer, f"FLOOD_WAIT:{e.seconds}")
     except RPCError as e:
         log.error(f"RPC error for peer {peer['id']}: {e}")
@@ -452,7 +474,7 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
         # Helper to (re)generate task packs of 10
         def _generate_task_packs(all_peers: List[Dict], cycle: int) -> List[Dict[str, Any]]:
             packs: List[Dict[str, Any]] = []
-            pack_size = 10
+            pack_size = _PEER_BATCH_SIZE  # Use configurable batch size
             for idx in range(0, len(all_peers), pack_size):
                 batch = all_peers[idx:idx + pack_size]
                 packs.append({
@@ -646,7 +668,7 @@ async def execute_due_announcements() -> None:
         log.info(f"Found {len(announcements)} active announcements to process")
 
         # Process announcements with semaphore to limit concurrent executions
-        semaphore = asyncio.Semaphore(5)  # Max 5 concurrent announcements
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANNOUNCEMENTS)  # Configurable max concurrent announcements
 
         async def process_with_semaphore(announcement):
             async with semaphore:
@@ -686,21 +708,36 @@ async def execute_due_announcements() -> None:
         log.error(f"Traceback: {traceback.format_exc()}")
 
 async def scheduler_loop() -> None:
-    """Main scheduler loop."""
+    """Main scheduler loop with improved error handling and rate limiting."""
     log.info("Scheduler loop started")
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+    
     while True:
         try:
             log.info("Scheduler iteration starting...")
             await execute_due_announcements()
             log.info("Scheduler iteration completed")
-            
+            consecutive_errors = 0  # Reset error counter on success
                 
         except Exception as e:
-            log.error(f"Error in scheduler loop: {e}")
+            consecutive_errors += 1
+            log.error(f"Error in scheduler loop (attempt {consecutive_errors}/{max_consecutive_errors}): {e}")
             import traceback
             log.error(f"Traceback: {traceback.format_exc()}")
-        scheduler_interval = get_timing('scheduler_interval_seconds', 30)
-        await asyncio.sleep(scheduler_interval)  # Check every N seconds for better precision
+            
+            # If too many consecutive errors, wait longer before retrying
+            if consecutive_errors >= max_consecutive_errors:
+                log.error(f"Too many consecutive errors ({consecutive_errors}), waiting 5 minutes before retry")
+                await asyncio.sleep(300)  # Wait 5 minutes
+                consecutive_errors = 0  # Reset counter
+            else:
+                # Wait longer on errors to avoid rapid retries
+                await asyncio.sleep(30)
+                continue
+                
+        scheduler_interval = get_timing('scheduler_interval_seconds', 60)  # Increased default to 60 seconds
+        await asyncio.sleep(scheduler_interval)
 
 async def ensure_scheduler_running():
     """Ensure the scheduler is running."""

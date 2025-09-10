@@ -8,7 +8,7 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/root/elon
-ExecStart=/root/elon/.venv/bin/python /root/elon/bot_watchdog.py --loop
+ExecStart=/root/elon/.venv/bin/python /root/elon/bot_watchdog.py --interval 60
 Restart=always
 RestartSec=5
 
