@@ -29,7 +29,7 @@ class BotWatchdog:
         self.max_restart_attempts = max_restart_attempts
         self.restart_count = 0
         self.last_restart_time = None
-        self.health_check_script = "/home/ubuntu/elon/health_check.py"
+        self.health_check_script = "/root/elon/health_check.py"
         
     def run_health_check(self):
         """Run health check script."""
@@ -56,7 +56,7 @@ class BotWatchdog:
         try:
             log.info("Restarting bot service...")
             result = subprocess.run(
-                ['sudo', 'systemctl', 'restart', 'elon-bot'],
+                ['systemctl', 'restart', 'elon-bot'],
                 capture_output=True,
                 text=True,
                 timeout=60

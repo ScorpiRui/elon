@@ -234,7 +234,7 @@ class BotHealthChecker:
         try:
             log.info("Restarting bot service...")
             result = subprocess.run(
-                ['sudo', 'systemctl', 'restart', 'elon-bot'],
+                ['systemctl', 'restart', 'elon-bot'],
                 capture_output=True,
                 text=True,
                 timeout=30

@@ -51,7 +51,7 @@ case "$1" in
         ;;
     "restart")
         echo "🔄 Restarting bot with new timings..."
-        sudo systemctl restart elon-bot
+        systemctl restart elon-bot
         echo "✅ Bot restarted"
         ;;
     "optimize")
