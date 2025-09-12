@@ -330,6 +330,8 @@ async def process_peer_batch(
                         # If it's a flood wait error, break the entire batch to avoid more flood waits
                         if "FLOOD_WAIT" in str(error.error):
                             log.warning(f"Flood wait detected, stopping batch processing to avoid more flood waits")
+                            # Add extra delay before returning
+                            await asyncio.sleep(10)
                             return success_count, failure_count, errors
                             
             except Exception as e:
@@ -590,6 +592,8 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
             # If FLOOD_WAIT seen, leave this pack for next run and continue to next pack
             if saw_flood_wait:
                 log.info(f"Pack {next_pack.get('pack_id')} paused due to FLOOD_WAIT; moving on to next pack")
+                # Add extra delay when flood wait is detected
+                await asyncio.sleep(30)
                 continue
             
             # Add configurable timeout between packs

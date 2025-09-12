@@ -1,17 +1,17 @@
 {
     "timing_settings": {
-        "pack_timeout_seconds": 10,
-        "scheduler_interval_seconds": 60,
+        "pack_timeout_seconds": 15,
+        "scheduler_interval_seconds": 120,
         "rate_limit_window_seconds": 60,
-        "max_messages_per_window": 8,
-        "flood_wait_retry_delay_seconds": 2,
-        "cache_cleanup_interval_minutes": 2,
-        "announcement_retry_delay_seconds": 15,
+        "max_messages_per_window": 3,
+        "flood_wait_retry_delay_seconds": 5,
+        "cache_cleanup_interval_minutes": 3,
+        "announcement_retry_delay_seconds": 30,
         "connection_timeout_seconds": 30,
-        "message_send_timeout_seconds": 20,
-        "batch_delay_seconds": 3,
-        "max_concurrent_announcements": 3,
-        "peer_batch_size": 5
+        "message_send_timeout_seconds": 30,
+        "batch_delay_seconds": 10,
+        "max_concurrent_announcements": 1,
+        "peer_batch_size": 2
     },
   "monitoring_settings": {
     "enable_detailed_logging": true,
