@@ -371,12 +371,12 @@ async def send_message_with_retry(
             return
         now = time.time()
         window = _driver_rate_window.setdefault(driver_id, [])
-        # drop old
         cutoff = now - _RATE_WINDOW_SECONDS
         while window and window[0] < cutoff:
             window.pop(0)
         if len(window) >= _MAX_MSGS_PER_WINDOW:
-            sleep_for = cutoff + window[0] + 0.01 - now
+            # Correct formula: oldest timestamp + window - now
+            sleep_for = (window[0] + _RATE_WINDOW_SECONDS) - now
             if sleep_for > 0:
                 await asyncio.sleep(sleep_for)
         window.append(now)
@@ -416,21 +416,36 @@ async def send_message_with_retry(
         # Add extra delay to prevent immediate retry
         await asyncio.sleep(min(e.seconds, 30))  # Cap at 30 seconds
         return False, PeerError(peer, f"FLOOD_WAIT:{e.seconds}")
-    except RPCError as e:
-        log.error(f"RPC error for peer {peer['id']}: {e}")
         
-        # Track banned channels - immediately mark as banned
-        if "banned from sending messages" in str(e).lower():
+    except RPCError as e:
+        msg = str(e).lower()
+        log.error(f"RPC error for peer {peer['id']}: {e}")
+
+        # Treat these as "never send here again" (blacklist)
+        ban_markers = [
+            "banned from sending messages",
+            "chat_write_forbidden",
+            "user_banned_in_channel",
+            "chat_admin_required",
+            "channel_private",
+            "peer_id_invalid",
+        ]
+        if any(m in msg for m in ban_markers):
             channel_id = peer['id']
             SUCCESS_RATE_STATS['banned_channels'].add(channel_id)
-            log.warning(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) is banned - removing from list")
-        
+            log.warning(f"Channel {peer.get('title', 'Unknown')} (ID: {channel_id}) blacklisted")
+
+        # Handle slowmode variants that sometimes arrive as RPCError text
+        if "slowmode_wait" in msg:
+            # Best effort: extract seconds if present, else default small pause
+            import re
+            m = re.search(r"(\d+)", msg)
+            secs = int(m.group(1)) if m else 10
+            return False, PeerError(peer, f"FLOOD_WAIT:{secs}")
+
         SUCCESS_RATE_STATS['failed_sends'] += 1
         return False, PeerError(peer, str(e))
-    except Exception as e:
-        log.error(f"Unexpected error for peer {peer['id']}: {e}")
-        SUCCESS_RATE_STATS['failed_sends'] += 1
-        return False, PeerError(peer, str(e))
+
 
 async def process_single_announcement(announcement: AnnouncementData) -> Tuple[int, int]:
     """Process a single announcement by sending persistent 10-peer packs sequentially per run.
@@ -592,8 +607,7 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
             # If FLOOD_WAIT seen, leave this pack for next run and continue to next pack
             if saw_flood_wait:
                 log.info(f"Pack {next_pack.get('pack_id')} paused due to FLOOD_WAIT; moving on to next pack")
-                # Add extra delay when flood wait is detected
-                await asyncio.sleep(30)
+
                 continue
             
             # Add configurable timeout between packs
@@ -704,7 +718,7 @@ async def execute_due_announcements() -> None:
 
         # Create tasks for all announcements
         tasks = [process_with_semaphore(announcement) for announcement in announcements]
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     except Exception as e:
         log.error(f"Error executing announcements: {e}")
