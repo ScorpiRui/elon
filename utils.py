@@ -330,8 +330,6 @@ async def process_peer_batch(
                         # If it's a flood wait error, break the entire batch to avoid more flood waits
                         if "FLOOD_WAIT" in str(error.error):
                             log.warning(f"Flood wait detected, stopping batch processing to avoid more flood waits")
-                            # Add extra delay before returning
-                            await asyncio.sleep(10)
                             return success_count, failure_count, errors
                             
             except Exception as e:

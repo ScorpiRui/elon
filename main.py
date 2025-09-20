@@ -1471,20 +1471,20 @@ async def on_shutdown():
 
 
 # --- Main function ---
+# --- Main function ---
 async def main():
     log.info("Starting bot...")
-
-    # By default we start the scheduler here (prod-safe).
-    # If you set START_SCHEDULER=0 in the environment, we skip it
-    # and can run the scheduler in a separate worker process.
-    if os.getenv("START_SCHEDULER", "1") == "1":
+    # Only start scheduler if explicitly enabled
+    import os
+    if os.environ.get("START_SCHEDULER", "0") == "1":
         await ensure_scheduler_running()
-        log.info("Scheduler started in bot process (START_SCHEDULER=1)")
+        log.info("Scheduler started successfully")
     else:
-        log.info("Skipping scheduler in bot process (START_SCHEDULER=0)")
+        log.info("Scheduler disabled in this process (START_SCHEDULER!=1)")
 
     dp.shutdown.register(on_shutdown)
     await dp.start_polling(bot)
+
 
 
 if __name__ == "__main__":
