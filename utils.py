@@ -414,7 +414,6 @@ async def send_message_with_retry(
         # Slow mode / floodwait: return special reason so it can be kept in pack for next cycle
         log.warning(f"Flood wait error for peer {peer['id']}: {e.seconds} seconds - will retry next cycle")
         # Add extra delay to prevent immediate retry
-        await asyncio.sleep(min(e.seconds, 30))  # Cap at 30 seconds
         return False, PeerError(peer, f"FLOOD_WAIT:{e.seconds}")
         
     except RPCError as e:
