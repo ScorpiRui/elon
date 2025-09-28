@@ -685,7 +685,7 @@ async def execute_due_announcements() -> None:
         
         # Get all active announcements
         announcements = await announcement_store.get_active_announcements()
-        anns = [a for a in anns if _is_mine(getattr(a, "driver_id", a.get("driver_id")))]
+        anns = [a for a in announcements if _is_mine(getattr(a, "driver_id", a.get("driver_id")))]
         log.info(f"Found {len(anns)} active announcements to process (worker {WORKER_ID}/{SHARD_COUNT})")
         if not announcements:
             log.debug("No active announcements found")
