@@ -685,6 +685,19 @@ async def execute_due_announcements() -> None:
         
         # Get all active announcements
         announcements = await announcement_store.get_active_announcements()
+        def _driver_id_of(ann):
+    # Works for dataclass objects and legacy dicts
+            return getattr(ann, "driver_id", ann["driver_id"])
+
+# Only apply sticky sharding when STEAL_MODE is off
+        STEAL_MODE = os.getenv("STEAL_MODE", "0") == "1"
+        if not STEAL_MODE:
+            announcements = [a for a in announcements if _is_mine(_driver_id_of(a))]
+
+        log.info(
+            f"Found {len(announcements)} active announcements to process "
+            f"(worker {WORKER_ID}/{SHARD_COUNT}, steal_mode={STEAL_MODE})"
+        )
         anns = [a for a in announcements if _is_mine(getattr(a, "driver_id", a.get("driver_id")))]
         log.info(f"Found {len(anns)} active announcements to process (worker {WORKER_ID}/{SHARD_COUNT})")
         if not announcements:
