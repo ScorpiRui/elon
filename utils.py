@@ -139,6 +139,15 @@ class DBCache:
 # Create global cache instance
 db_cache = DBCache()
 
+
+WORKER_ID   = int(os.getenv("WORKER_ID", "1"))
+SHARD_COUNT = int(os.getenv("SHARD_COUNT", "1"))
+
+def _is_mine(driver_id: int) -> bool:
+    # sticky partition: each driver handled by exactly one worker
+    return (driver_id % SHARD_COUNT) == ((WORKER_ID - 1) % SHARD_COUNT)
+
+
 def db_operation(func=None, *, query=None, cache_key: Optional[str] = None, invalidate_keys: Optional[List[str]] = None):
     if func is None:
         return lambda f: db_operation(f, query=query, cache_key=cache_key, invalidate_keys=invalidate_keys)
@@ -676,6 +685,8 @@ async def execute_due_announcements() -> None:
         
         # Get all active announcements
         announcements = await announcement_store.get_active_announcements()
+        anns = [a for a in anns if _is_mine(getattr(a, "driver_id", a.get("driver_id")))]
+        log.info(f"Found {len(anns)} active announcements to process (worker {WORKER_ID}/{SHARD_COUNT})")
         if not announcements:
             log.debug("No active announcements found")
             return
