@@ -682,6 +682,74 @@ async def execute_due_announcements() -> None:
     """Execute announcements that are due to run."""
     try:
         log.info("Starting execute_due_announcements...")
+        import os  # local import is fine
+
+        # Load active announcements (returns AnnouncementData objects)
+        announcements = await announcement_store.get_active_announcements()
+
+        # SAFE accessor: never subscript dataclass by accident
+        def _driver_id_of(ann):
+            try:
+                return ann.driver_id     # dataclass path
+            except AttributeError:
+                return ann["driver_id"]  # legacy dict path
+
+        # Shard filter (unless cooperative steal mode enabled)
+        STEAL_MODE = os.getenv("STEAL_MODE", "0") == "1"
+        if not STEAL_MODE:
+            announcements = [a for a in announcements if _is_mine(_driver_id_of(a))]
+
+        log.info(
+            f"Found {len(announcements)} active announcements to process "
+            f"(worker {WORKER_ID}/{SHARD_COUNT}, steal_mode={STEAL_MODE})"
+        )
+        if not announcements:
+            log.debug("No active announcements found")
+            return
+
+        # Limit per-process concurrency
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANNOUNCEMENTS)
+
+        async def process_with_semaphore(announcement):
+            async with semaphore:
+                try:
+                    log.info(f"Processing announcement {announcement.id} for driver {announcement.driver_id}")
+
+                    # Per-announcement run-state
+                    announcement_state = await db_cache.get(f"announcement_state:{announcement.id}")
+                    if not announcement_state:
+                        announcement_state = AnnouncementState()
+                        announcement_state.is_running = True
+                        await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
+                        log.info(f"Created new announcement state for {announcement.id}")
+
+                    log.info(
+                        f"Checking if announcement {announcement.id} should run "
+                        f"(interval: {announcement.interval_min} min)"
+                    )
+                    if announcement_state.should_run(announcement.interval_min):
+                        log.info(f"Announcement {announcement.id} is due to run")
+                        success, failure = await process_single_announcement(announcement)
+                        announcement_state.update_run_time()
+                        await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
+                        log.info(f"Announcement {announcement.id} processed: {success} success, {failure} failure")
+                    else:
+                        log.info(f"Announcement {announcement.id} is not due to run yet")
+                except Exception as e:
+                    log.error(f"Error processing announcement {getattr(announcement, 'id', '?')}: {e}")
+                    import traceback
+                    log.error(f"Traceback: {traceback.format_exc()}")
+
+        await asyncio.gather(*(process_with_semaphore(a) for a in announcements), return_exceptions=True)
+
+    except Exception as e:
+        log.error(f"Error executing announcements: {e}")
+        import traceback
+        log.error(f"Traceback: {traceback.format_exc()}")
+
+    """Execute announcements that are due to run."""
+    try:
+        log.info("Starting execute_due_announcements...")
         import os  # local import in case the module top doesn't have it
 
         # 1) Load active announcements
