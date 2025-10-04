@@ -116,6 +116,13 @@ SUCCESS_RATE_STATS = {
     'failed_sends': 0,
     'banned_channels': set()
 }
+# SAFE accessors that don't subscript dataclasses
+def _driver_id_of(ann):
+    # Only the chosen branch is evaluated, so no accidental ann["driver_id"]
+    return ann.driver_id if hasattr(ann, "driver_id") else ann["driver_id"]
+
+def _field(ann, name):
+    return getattr(ann, name) if hasattr(ann, name) else ann[name]
 
 class DBCache:
     def __init__(self):
@@ -682,19 +689,12 @@ async def execute_due_announcements() -> None:
     """Execute announcements that are due to run."""
     try:
         log.info("Starting execute_due_announcements...")
-        import os  # local import is fine
+        import os
 
-        # Load active announcements (returns AnnouncementData objects)
+        # Load active announcements (these are AnnouncementData objects)
         announcements = await announcement_store.get_active_announcements()
 
-        # SAFE accessor: never subscript dataclass by accident
-        def _driver_id_of(ann):
-            try:
-                return ann.driver_id     # dataclass path
-            except AttributeError:
-                return ann["driver_id"]  # legacy dict path
-
-        # Shard filter (unless cooperative steal mode enabled)
+        # Shard filter (unless cooperative mode enabled)
         STEAL_MODE = os.getenv("STEAL_MODE", "0") == "1"
         if not STEAL_MODE:
             announcements = [a for a in announcements if _is_mine(_driver_id_of(a))]
@@ -707,7 +707,7 @@ async def execute_due_announcements() -> None:
             log.debug("No active announcements found")
             return
 
-        # Limit per-process concurrency
+        # Per-process concurrency limit
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANNOUNCEMENTS)
 
         async def process_with_semaphore(announcement):
@@ -741,143 +741,6 @@ async def execute_due_announcements() -> None:
                     log.error(f"Traceback: {traceback.format_exc()}")
 
         await asyncio.gather(*(process_with_semaphore(a) for a in announcements), return_exceptions=True)
-
-    except Exception as e:
-        log.error(f"Error executing announcements: {e}")
-        import traceback
-        log.error(f"Traceback: {traceback.format_exc()}")
-
-    """Execute announcements that are due to run."""
-    try:
-        log.info("Starting execute_due_announcements...")
-        import os  # local import in case the module top doesn't have it
-
-        # 1) Load active announcements
-        announcements = await announcement_store.get_active_announcements()
-
-        # Works for both dataclass objects and legacy dicts
-        def _driver_id_of(ann):
-            try:
-                return ann.driver_id
-            except AttributeError:
-                return ann["driver_id"]
-
-        # 2) Shard filter (unless cooperative "steal" mode is enabled)
-        STEAL_MODE = os.getenv("STEAL_MODE", "0") == "1"
-        if not STEAL_MODE:
-            announcements = [a for a in announcements if _is_mine(_driver_id_of(a))]
-
-        log.info(
-            f"Found {len(announcements)} active announcements to process "
-            f"(worker {WORKER_ID}/{SHARD_COUNT}, steal_mode={STEAL_MODE})"
-        )
-        if not announcements:
-            log.debug("No active announcements found")
-            return
-
-        # 3) Concurrency guard (per-process)
-        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANNOUNCEMENTS)
-
-        async def process_with_semaphore(announcement):
-            async with semaphore:
-                try:
-                    log.info(f"Processing announcement {announcement.id} for driver {announcement.driver_id}")
-
-                    # Get or init per-announcement state
-                    announcement_state = await db_cache.get(f"announcement_state:{announcement.id}")
-                    if not announcement_state:
-                        announcement_state = AnnouncementState()
-                        announcement_state.is_running = True
-                        await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
-                        log.info(f"Created new announcement state for {announcement.id}")
-
-                    # Interval check
-                    log.info(
-                        f"Checking if announcement {announcement.id} should run "
-                        f"(interval: {announcement.interval_min} min)"
-                    )
-                    if announcement_state.should_run(announcement.interval_min):
-                        log.info(f"Announcement {announcement.id} is due to run (interval: {announcement.interval_min} min)")
-                        success, failure = await process_single_announcement(announcement)
-                        announcement_state.update_run_time()
-                        await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
-                        log.info(f"Announcement {announcement.id} processed: {success} success, {failure} failure")
-                    else:
-                        log.info(f"Announcement {announcement.id} is not due to run yet")
-                except Exception as e:
-                    log.error(f"Error processing announcement {getattr(announcement, 'id', '?')}: {e}")
-                    import traceback
-                    log.error(f"Traceback: {traceback.format_exc()}")
-
-        # 4) Run them
-        await asyncio.gather(*(process_with_semaphore(a) for a in announcements), return_exceptions=True)
-
-    except Exception as e:
-        log.error(f"Error executing announcements: {e}")
-        import traceback
-        log.error(f"Traceback: {traceback.format_exc()}")
-
-    """Execute announcements that are due to run."""
-    try:
-        log.info("Starting execute_due_announcements...")
-        
-        # Get all active announcements
-        announcements = await announcement_store.get_active_announcements()
-        def _driver_id_of(ann):
-    # Works for dataclass objects and legacy dicts
-            return getattr(ann, "driver_id", ann["driver_id"])
-
-# Only apply sticky sharding when STEAL_MODE is off
-        STEAL_MODE = os.getenv("STEAL_MODE", "0") == "1"
-        if not STEAL_MODE:
-            announcements = [a for a in announcements if _is_mine(_driver_id_of(a))]
-
-        log.info(
-            f"Found {len(announcements)} active announcements to process "
-            f"(worker {WORKER_ID}/{SHARD_COUNT}, steal_mode={STEAL_MODE})"
-        )
-        anns = [a for a in announcements if _is_mine(getattr(a, "driver_id", a.get("driver_id")))]
-        log.info(f"Found {len(anns)} active announcements to process (worker {WORKER_ID}/{SHARD_COUNT})")
-        if not announcements:
-            log.debug("No active announcements found")
-            return
-
-        log.info(f"Found {len(announcements)} active announcements to process")
-
-        # Process announcements with semaphore to limit concurrent executions
-        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ANNOUNCEMENTS)  # Configurable max concurrent announcements
-
-        async def process_with_semaphore(announcement):
-            async with semaphore:
-                try:
-                    log.info(f"Processing announcement {announcement.id} for driver {announcement.driver_id}")
-                    
-                    # Get announcement state
-                    announcement_state = await db_cache.get(f"announcement_state:{announcement.id}")
-                    if not announcement_state:
-                        announcement_state = AnnouncementState()
-                        announcement_state.is_running = True
-                        await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
-                        log.info(f"Created new announcement state for {announcement.id}")
-
-                    # Check if announcement should run based on interval
-                    log.info(f"Checking if announcement {announcement.id} should run (interval: {announcement.interval_min} min)")
-                    if announcement_state.should_run(announcement.interval_min):
-                        log.info(f"Announcement {announcement.id} is due to run (interval: {announcement.interval_min} min)")
-                        success, failure = await process_single_announcement(announcement)
-                        announcement_state.update_run_time()
-                        await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
-                        log.info(f"Announcement {announcement.id} processed: {success} success, {failure} failure")
-                    else:
-                        log.info(f"Announcement {announcement.id} is not due to run yet")
-                except Exception as e:
-                    log.error(f"Error processing announcement {announcement.id}: {e}")
-                    import traceback
-                    log.error(f"Traceback: {traceback.format_exc()}")
-
-        # Create tasks for all announcements
-        tasks = [process_with_semaphore(announcement) for announcement in announcements]
-        await asyncio.gather(*tasks, return_exceptions=True)
 
     except Exception as e:
         log.error(f"Error executing announcements: {e}")
