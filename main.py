@@ -46,12 +46,11 @@ from driver_store import driver_store, Driver
 with open('config.json', 'r', encoding='utf-8') as f:
     settings = json.load(f)
 
-# Configure logging to write to both console and file
+# Configure logging with reduced verbosity and no file I/O for performance
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('announcement_debug.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )

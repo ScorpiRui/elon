@@ -39,12 +39,14 @@ ENCODING_SETTINGS = settings.get('ENCODING_SETTINGS', {
 # No filesystem sessions: StringSession only; prevent multi-process sharing
 SESSION_DIR = None
 
-# Configure logging to write to both console and file
+# Global quiet flag to suppress non-essential notifications/logs
+QUIET_NOTIFICATIONS = True
+
+# Configure logging with reduced verbosity and no file I/O for performance
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('announcement_debug.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -585,10 +587,7 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                                         'reason': error.error if isinstance(error.error, str) else str(error.error),
                                         'cycle': announcement.current_cycle
                                     })
-                                try:
-                                    await bot.send_message(chat_id=driver.tg_id, text=f"❌ '{peer.get('title','?')}' guruhiga yuborilmadi. Sabab: {error.error}")
-                                except Exception:
-                                    pass
+                                # Intentionally do not notify user about per-group send failures
                             next_pack['peers'] = [pp for pp in next_pack['peers'] if int(pp['id']) != int(peer['id'])]
                             await announcement_store.update_announcement(announcement)
                 except Exception as e:
@@ -603,10 +602,7 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
                             'reason': str(e),
                             'cycle': announcement.current_cycle
                         })
-                    try:
-                        await bot.send_message(chat_id=driver.tg_id, text=f"❌ '{peer.get('title','?')}' guruhiga yuborilmadi. Sabab: {str(e)}")
-                    except Exception:
-                        pass
+                    # Intentionally do not notify user about per-group send failures
                     next_pack['peers'] = [pp for pp in next_pack['peers'] if int(pp['id']) != int(peer['id'])]
                     await announcement_store.update_announcement(announcement)
 
@@ -646,6 +642,8 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
 async def _maybe_send_cycle_report(announcement: AnnouncementData, driver: Driver) -> None:
     """Send first-cycle summary stats to the driver (once per completed cycle 0)."""
     try:
+        if QUIET_NOTIFICATIONS:
+            return
         # Count totals for the cycle
         if announcement.current_cycle != 0:
             return
@@ -827,6 +825,8 @@ async def notify_admin(
 ) -> None:
     """Send notification to admin."""
     try:
+        if QUIET_NOTIFICATIONS:
+            return
         # Ensure proper text encoding for Unicode characters (including Cyrillic)
         import unicodedata
         if message:
@@ -855,6 +855,8 @@ async def send_telegram_notification(
 ) -> bool:
     """Send notification via Telegram."""
     try:
+        if QUIET_NOTIFICATIONS:
+            return True
         # Ensure proper text encoding for Unicode characters (including Cyrillic)
         import unicodedata
         if message:
