@@ -3,7 +3,7 @@
     "ADMINS": [
         1135712336,
         7883374132
-    ],
+        ],
     "ENCODING_SETTINGS": {
         "DEFAULT_ENCODING": "utf-8",
         "UNICODE_NORMALIZATION": "NFC",

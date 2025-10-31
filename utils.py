@@ -81,32 +81,38 @@ class PeerError:
 class AnnouncementState:
     def __init__(self):
         self.is_running = False
-        self.last_run = None
+        self.last_run_start = None  # When processing started
+        self.last_run_end = None    # When processing completed
         self.next_run = None
         self.errors = []
         self.success_count = 0
         self.failure_count = 0
 
     def should_run(self, interval_min: int) -> bool:
-        """Check if announcement should run based on interval."""
+        """Check if announcement should run based on interval.
+        Ensures runs happen within ±2 minutes of selected interval."""
         if not self.is_running:
-            log.debug(f"Announcement not running")
             return False
             
         now = datetime.now()
-        if self.last_run is None:
-            log.debug(f"First run for announcement")
+        if self.last_run_start is None:
+            # First run - execute immediately
             return True
             
-        # Calculate next run time based on interval
-        next_run = self.last_run + timedelta(minutes=interval_min)
-        should_run = now >= next_run
-        log.debug(f"Announcement should_run check: last_run={self.last_run}, next_run={next_run}, now={now}, should_run={should_run}")
-        return should_run
+        # Calculate when next run should happen (based on last START time)
+        target_next_run = self.last_run_start + timedelta(minutes=interval_min)
+        
+        # Run if we're at or past the target time
+        # Maximum delay tolerance is handled by frequent scheduler checks (every 15s)
+        return now >= target_next_run
 
-    def update_run_time(self):
-        """Update last run time."""
-        self.last_run = datetime.now()
+    def update_run_time(self, started_at: Optional[datetime] = None):
+        """Update run times. If started_at is provided, use it; otherwise use now."""
+        now = datetime.now()
+        if started_at is None:
+            started_at = now
+        self.last_run_start = started_at
+        self.last_run_end = now
 
 # Create global state instance
 state = AnnouncementState()
@@ -355,10 +361,11 @@ async def process_peer_batch(
                 errors.append(PeerError(peer, str(e)))
                 log.error(f"Exception sending to peer {i+j+1}/{len(peers)}: {peer.get('title', 'Unknown')} - {e}")
         
-        # Add delay between sub-batches to respect rate limits
+        # Minimal delay between sub-batches (reduced for faster processing)
         if i + sub_batch_size < len(peers):
-            log.info(f"Waiting {_BATCH_DELAY_SECONDS} seconds before next sub-batch...")
-            await asyncio.sleep(_BATCH_DELAY_SECONDS)
+            batch_delay = get_timing('batch_delay_seconds', 0.5)
+            if batch_delay > 0:
+                await asyncio.sleep(batch_delay)
 
     log.info(f"Batch {batch_id} completed: {success_count} success, {failure_count} failure")
     return success_count, failure_count, errors
@@ -548,6 +555,11 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
 
         # Process all current packs once (snapshot) so we don't loop infinitely on paused packs
         packs_snapshot = list(announcement.task_packs or [])
+        # Capture original peer counts BEFORE processing (for cycle 0 report)
+        original_total_peers = 0
+        if announcement.current_cycle == 0:
+            for pack in packs_snapshot:
+                original_total_peers += len(pack.get('peers', []))
         for next_pack in packs_snapshot:
             # Skip if this pack was completed/deleted meanwhile
             if next_pack.get('completed'):
@@ -619,14 +631,27 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
 
                 continue
             
-            # Add configurable timeout between packs
-            pack_timeout = get_timing('pack_timeout_seconds', 5)
-            await asyncio.sleep(pack_timeout)
+            # Minimal delay between packs for better performance
+            pack_timeout = get_timing('pack_timeout_seconds', 1)
+            if pack_timeout > 0:
+                await asyncio.sleep(pack_timeout)
 
         # If after processing snapshot no packs remain, close cycle
         if not (announcement.task_packs or []):
+            # Capture cycle statistics BEFORE regenerating packs (for cycle 0 report)
+            cycle_stats = None
+            if announcement.current_cycle == 0:
+                # Count sent peers from packs_snapshot (sent_peer_ids are updated during processing)
+                sent_peers_from_cycle = 0
+                for pack in packs_snapshot:
+                    sent_peers_from_cycle += len(pack.get('sent_peer_ids', []))
+                cycle_stats = {
+                    'total_peers': original_total_peers,  # Use original count captured before processing
+                    'sent_peers': sent_peers_from_cycle   # Use updated count from snapshot
+                }
+            
             await announcement_store.update_announcement(announcement)
-            await _maybe_send_cycle_report(announcement, driver)
+            await _maybe_send_cycle_report(announcement, driver, cycle_stats)
             announcement.current_cycle = int(getattr(announcement, 'current_cycle', 0)) + 1
             announcement.task_packs = _generate_task_packs(peers, cycle=announcement.current_cycle)
             await announcement_store.update_announcement(announcement)
@@ -639,7 +664,7 @@ async def process_single_announcement(announcement: AnnouncementData) -> Tuple[i
         log.error(f"Traceback: {traceback.format_exc()}")
         return 0, 0
 
-async def _maybe_send_cycle_report(announcement: AnnouncementData, driver: Driver) -> None:
+async def _maybe_send_cycle_report(announcement: AnnouncementData, driver: Driver, cycle_stats: Optional[Dict[str, int]] = None) -> None:
     """Send first-cycle summary stats to the driver (once per completed cycle 0)."""
     try:
         if QUIET_NOTIFICATIONS:
@@ -647,14 +672,21 @@ async def _maybe_send_cycle_report(announcement: AnnouncementData, driver: Drive
         # Count totals for the cycle
         if announcement.current_cycle != 0:
             return
-        # Total peers equals sum of peers in packs when cycle 0 was created
-        total_peers = 0
-        for p in announcement.task_packs or []:
-            total_peers += len(p.get('peers', []))
-        # Sent peers across packs
-        sent_peers = 0
-        for p in announcement.task_packs or []:
-            sent_peers += len(p.get('sent_peer_ids', []))
+        
+        # Use provided cycle_stats if available (captured before packs were deleted)
+        # Otherwise try to count from task_packs (may be empty)
+        if cycle_stats:
+            total_peers = cycle_stats.get('total_peers', 0)
+            sent_peers = cycle_stats.get('sent_peers', 0)
+        else:
+            # Fallback: try to count from task_packs (may be empty if already deleted)
+            total_peers = 0
+            for p in announcement.task_packs or []:
+                total_peers += len(p.get('peers', []))
+            sent_peers = 0
+            for p in announcement.task_packs or []:
+                sent_peers += len(p.get('sent_peer_ids', []))
+        
         # Build report text
         failed = [fp for fp in (announcement.failed_peers or []) if int(fp.get('cycle', 0)) == 0]
         failed_count = len(failed)
@@ -711,28 +743,20 @@ async def execute_due_announcements() -> None:
         async def process_with_semaphore(announcement):
             async with semaphore:
                 try:
-                    log.info(f"Processing announcement {announcement.id} for driver {announcement.driver_id}")
-
                     # Per-announcement run-state
                     announcement_state = await db_cache.get(f"announcement_state:{announcement.id}")
                     if not announcement_state:
                         announcement_state = AnnouncementState()
                         announcement_state.is_running = True
                         await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
-                        log.info(f"Created new announcement state for {announcement.id}")
 
-                    log.info(
-                        f"Checking if announcement {announcement.id} should run "
-                        f"(interval: {announcement.interval_min} min)"
-                    )
                     if announcement_state.should_run(announcement.interval_min):
-                        log.info(f"Announcement {announcement.id} is due to run")
+                        # Record when processing starts (critical for accurate timing)
+                        processing_start_time = datetime.now()
                         success, failure = await process_single_announcement(announcement)
-                        announcement_state.update_run_time()
+                        # Update run time with the actual start time to maintain accurate intervals
+                        announcement_state.update_run_time(started_at=processing_start_time)
                         await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
-                        log.info(f"Announcement {announcement.id} processed: {success} success, {failure} failure")
-                    else:
-                        log.info(f"Announcement {announcement.id} is not due to run yet")
                 except Exception as e:
                     log.error(f"Error processing announcement {getattr(announcement, 'id', '?')}: {e}")
                     import traceback
@@ -774,7 +798,8 @@ async def scheduler_loop() -> None:
                 await asyncio.sleep(30)
                 continue
                 
-        scheduler_interval = get_timing('scheduler_interval_seconds', 60)  # Increased default to 60 seconds
+        # Check more frequently to ensure timely execution (default 15 seconds)
+        scheduler_interval = get_timing('scheduler_interval_seconds', 15)
         await asyncio.sleep(scheduler_interval)
 
 async def ensure_scheduler_running():
@@ -907,7 +932,7 @@ async def start_announcement(driver_id: int) -> bool:
         # Create new announcement state
         announcement_state = AnnouncementState()
         announcement_state.is_running = True
-        announcement_state.last_run = None  # Reset last run time
+        announcement_state.last_run_start = None  # Reset last run time
         
         # Save state to cache
         await db_cache.set(f"announcement_state:{announcement.id}", announcement_state)
